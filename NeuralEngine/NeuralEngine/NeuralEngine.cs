@@ -7,19 +7,17 @@ namespace NeuralEngine
     public interface IModelInput
     {
 
-        [ColumnName("Class"), LoadColumn(2)]
-        public bool Class { get; set; }
+        string Label { get; set; }
     }
 
     public interface IModelOutput
     {
-        [ColumnName("PredictedLabel")]
-        public bool Prediction { get; set; }
+        public string PredictedLabelValue { get; set; }
 
-        public float Score { get; set; }
+        public float[] Score { get; set; }
     }
 
-    public class NeuralEngine<TInput, TOutput> where TInput : class, new() where TOutput : class, new()
+    public class NeuralEngine<TInput, TOutput> where TInput : class, IModelInput, new() where TOutput : class, IModelOutput, new()
     {
         MLContext mlContext { get; set; }
 
@@ -27,31 +25,40 @@ namespace NeuralEngine
 
         ITransformer? Model { get; set; }
 
-        public NeuralEngine(int numberOfIterations = 10000, double learningRate = 0.001)
+        PredictionEngine<TInput, TOutput> PredictionEngine { get; set; }
+
+        public NeuralEngine()
         {
             mlContext = new MLContext();
 
-            var props = typeof(TInput).GetProperties().Where(x => x.Name != "Class").Select(x => x.Name).ToArray();
+            var props = typeof(TInput).GetProperties().Where(x => x.Name != "Label").Select(x=>x.Name).Take(700).ToArray();
 
-            var dataProcessPipeline = mlContext.Transforms.Concatenate("Features", props);
-            var trainer = mlContext.BinaryClassification.Trainers.SgdCalibrated(labelColumnName: "Class", featureColumnName: "Features", numberOfIterations: numberOfIterations, learningRate: learningRate);
-            var trainingPipeline = dataProcessPipeline.Append(trainer);
-            PipeLine = trainingPipeline;
+            if (props != null)
+            {
+                var dataProcessPipeline = mlContext.Transforms
+                    .Concatenate("Features", props)
+                    .Append(mlContext.Transforms.Conversion.MapValueToKey(outputColumnName: "LabelKey", inputColumnName: "Label"))
+                    .Append(mlContext.MulticlassClassification.Trainers.LbfgsMaximumEntropy(labelColumnName: "LabelKey", featureColumnName: "Features"))
+                    .Append(mlContext.Transforms.Conversion.MapKeyToValue("PredictedLabelValue", "PredictedLabel"))
+                    .AppendCacheCheckpoint(mlContext);
+
+                PipeLine = dataProcessPipeline;
+
+            }
         }
 
         public void Train(TInput[] trainInput)
         {
             IDataView trainingData = mlContext.Data.LoadFromEnumerable(trainInput);
             Model = PipeLine.Fit(trainingData);
+            PredictionEngine=mlContext.Model.CreatePredictionEngine<TInput, TOutput>(Model);
         }
 
         public TOutput? Think(TInput input)
         {
-            if (Model != null)
+            if (PredictionEngine != null)
             {
-                var predEngine = mlContext.Model.CreatePredictionEngine<TInput, TOutput>(Model);
-
-                var answ = predEngine.Predict(input);
+                var answ = PredictionEngine.Predict(input);
                 return answ;
             }
             return null;
